@@ -1,5 +1,8 @@
 {
     "name": "yummy-proxy",
     "version": "1.0.0",
-    "type": "module"
+    "type": "module",
+    "dependencies": {
+        "@upstash/redis": "^1.28.0"
+    }
 }
