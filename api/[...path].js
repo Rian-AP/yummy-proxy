@@ -12,43 +12,46 @@ export default async function handler(req, res) {
     
     try {
         // 1. Получаем путь
-        // Запрос: /api/anime/123/reviews
-        // path = ['anime', '123', 'reviews']
         const pathArray = req.query.path || [];
         const apiPath = '/' + pathArray.join('/');
         
         // 2. Собираем query параметры
         const queryParams = { ...req.query };
-        delete queryParams.path; // Убираем служебный параметр
+        delete queryParams.path; 
         
         const queryString = new URLSearchParams(queryParams).toString();
         const fullUrl = `https://api.yani.tv${apiPath}${queryString ? '?' + queryString : ''}`;
         
         console.log(`📡 ${req.method} ${fullUrl}`);
         
-        // 3. Получаем токен
+        // 3. Получаем валидный токен (из кэша или через логин)
         const token = await getValidToken();
         
-        // 4. Делаем запрос к YummyAnime
+        // 4. Формируем заголовки запроса
+        const headers = {
+            'Authorization': `Bearer ${token}`,
+            'X-Application': process.env.YUMMY_APP_TOKEN,
+            'Accept': 'image/avif,image/webp,application/json', // Добавили поддержку картинок и json
+            'Lang': req.headers['lang'] || 'ru',
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        };
+
         const fetchOptions = {
             method: req.method,
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'X-Application': process.env.YUMMY_APP_TOKEN,
-                'Accept': 'image/avif,image/webp',
-                'Lang': req.headers['lang'] || 'ru',
-                'Content-Type': 'application/json'
-            }
+            headers: headers
         };
         
         // Если есть тело запроса (POST, PUT, PATCH)
         if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
-            fetchOptions.body = JSON.stringify(req.body);
+            // Убедимся, что отправляем строку
+            fetchOptions.body = typeof req.body === 'object' ? JSON.stringify(req.body) : req.body;
         }
         
+        // 5. Выполняем запрос к реальному API
         const response = await fetch(fullUrl, fetchOptions);
         
-        // 5. Обрабатываем ответ
+        // 6. Обрабатываем ответ
         const contentType = response.headers.get('content-type');
         
         if (contentType?.includes('application/json')) {
