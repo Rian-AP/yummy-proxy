@@ -19,6 +19,7 @@ export default async function handler(req, res) {
         delete queryParams.path; 
         
         const queryString = new URLSearchParams(queryParams).toString();
+        // ВАЖНО: API Yani.tv иногда требует слэш в конце, но лучше пусть fetch сам разберется через redirect: 'follow'
         const fullUrl = `https://api.yani.tv${apiPath}${queryString ? '?' + queryString : ''}`;
         
         console.log(`📡 Запрос прокси: ${req.method} ${fullUrl}`);
@@ -26,57 +27,48 @@ export default async function handler(req, res) {
         // 2. Получаем токен
         const token = await getValidToken();
         
-        // 3. Делаем запрос (с отключенным авто-редиректом)
+        // 3. Настройки запроса
         const fetchOptions = {
             method: req.method,
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'X-Application': process.env.YUMMY_APP_TOKEN,
-                'Accept': 'application/json', // Требуем только JSON
+                'Accept': 'application/json', 
                 'Lang': req.headers['lang'] || 'ru',
                 'Content-Type': 'application/json',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
-            redirect: 'manual' // <--- ВАЖНО: Не следовать за редиректами автоматически
+            redirect: 'follow' // <--- САМОЕ ВАЖНОЕ: Автоматически следовать за редиректами
         };
         
-        // Тело запроса для POST/PUT
         if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
             fetchOptions.body = typeof req.body === 'object' ? JSON.stringify(req.body) : req.body;
         }
         
+        // 4. Выполняем запрос
         const response = await fetch(fullUrl, fetchOptions);
         
-        console.log(`🔙 Ответ API: ${response.status} ${response.statusText}`);
-
-        // 4. Обработка редиректов (301, 302)
-        if (response.status >= 300 && response.status < 400) {
-            const location = response.headers.get('location');
-            console.warn(`⚠️ API вернул редирект на: ${location}`);
-            return res.status(response.status).json({
-                error: 'API Redirected',
-                location: location,
-                message: 'Target API tried to redirect request. Check URL.'
-            });
-        }
-
-        // 5. Обработка контента
+        // 5. Обрабатываем ответ
         const contentType = response.headers.get('content-type');
         
+        // Если вернулся JSON - отдаем его
         if (contentType && contentType.includes('application/json')) {
             const data = await response.json();
             return res.status(response.status).json(data);
-        } else {
-            // Если пришел не JSON (например, HTML с ошибкой)
-            const text = await response.text();
-            console.error('❌ API вернул НЕ JSON. Начало ответа:', text.substring(0, 200));
-            
-            return res.status(502).json({
-                error: 'Invalid API Response',
-                status: response.status,
-                contentType: contentType,
-                preview: text.substring(0, 500) // Показываем текст ошибки в JSON формате
+        } 
+        // Если вернулся HTML (например, страница Swagger/Документации), значит URL неверный
+        else if (contentType && contentType.includes('text/html')) {
+            console.warn('⚠️ API вернул HTML (скорее всего страницу Swagger). URL неверен.');
+            return res.status(404).json({
+                error: 'Endpoint Not Found',
+                message: 'API returned HTML documentation instead of JSON. Check your URL path.',
+                requestedUrl: fullUrl
             });
+        }
+        // Любой другой формат (текст, ошибки)
+        else {
+            const text = await response.text();
+            return res.status(response.status).send(text);
         }
         
     } catch (error) {
