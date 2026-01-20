@@ -7,16 +7,16 @@ const redis = new Redis({
 
 const TOKEN_KEY = 'yummy:user_token';
 const EXPIRY_KEY = 'yummy:token_expiry';
-
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 async function login() {
-    console.log('🔐 Логин...');
+    console.log('🔐 Логин (Этап 1)...');
     
     if (!process.env.YUMMY_EMAIL || !process.env.YUMMY_PASSWORD) {
         throw new Error('❌ Не заданы переменные окружения (LOGIN/PASS)');
     }
 
+    // 1. Первый запрос - отправляем логин/пароль
     const response = await fetch('https://api.yani.tv/profile/login', {
         method: 'POST',
         headers: {
@@ -31,41 +31,63 @@ async function login() {
     });
     
     const text = await response.text();
-    
-    // Пытаемся распарсить JSON
     let data;
     try {
         data = JSON.parse(text);
     } catch (e) {
-        throw new Error(`Server returned non-JSON: ${text.substring(0, 100)}...`);
+        throw new Error(`Server returned non-JSON: ${text}`);
     }
 
-    // ВАЖНО: Логируем ответ сервера, чтобы видеть проблемы в Vercel Logs
-    console.log('📄 YANI RESPONSE:', JSON.stringify(data));
+    console.log('📄 Ответ логина:', JSON.stringify(data));
 
-    if (!response.ok) {
-        throw new Error(`Login failed (${response.status}): ${text}`);
+    // Проверяем, пришел ли токен сразу
+    let token = data.token || (data.response && data.response.token);
+
+    // ЕСЛИ ТОКЕНА НЕТ, НО ЕСТЬ SUCCESS -> ПРОБУЕМ ЧЕРЕЗ COOKIE
+    if (!token && data.response && data.response.success === true) {
+        console.log('⚠️ Токен не пришел сразу. Пробуем получить через Cookie...');
+        
+        // Получаем куки из заголовков
+        const cookies = response.headers.get('set-cookie');
+        
+        if (!cookies) {
+            throw new Error('Login success, but no Token and no Cookies returned.');
+        }
+
+        console.log('🍪 Куки получены, запрашиваем токен (Этап 2)...');
+
+        // 2. Второй запрос - обмениваем куки на токен
+        const tokenResponse = await fetch('https://api.yani.tv/profile/token', {
+            method: 'GET',
+            headers: {
+                'Cookie': cookies, // Передаем полученные куки
+                'X-Application': process.env.YUMMY_APP_TOKEN,
+                'User-Agent': USER_AGENT
+            }
+        });
+
+        const tokenText = await tokenResponse.text();
+        const tokenData = JSON.parse(tokenText);
+        
+        console.log('📄 Ответ получения токена:', JSON.stringify(tokenData));
+        
+        token = tokenData.token || (tokenData.response && tokenData.response.token);
     }
-
-    // Ищем токен в разных возможных местах
-    // 1. data.token (стандарт)
-    // 2. data.response.token (иногда бывает вложен)
-    const token = data.token || (data.response && data.response.token);
 
     if (!token) {
-        // Если есть сообщение об ошибке в JSON
-        if (data.error) {
-            throw new Error(`API Error: ${JSON.stringify(data.error)}`);
-        }
-        throw new Error(`Token not found in response. Keys: ${Object.keys(data).join(', ')}`);
+        throw new Error(`Не удалось получить токен ни напрямую, ни через Cookie. Ответ: ${JSON.stringify(data)}`);
     }
     
     return token;
 }
 
+// ... остальной код refreshToken и getValidToken остаётся тем же, 
+// но лучше скопировать файл целиком ниже, чтобы ничего не потерять.
+
 async function refreshToken(currentToken) {
+    // В данной реализации refreshToken может быть не так важен, 
+    // если мы просто перелогиниваемся, но оставим для совместимости.
     console.log('🔄 Обновление токена...');
-    
     try {
         const response = await fetch('https://api.yani.tv/profile/token', {
             method: 'GET',
@@ -77,15 +99,10 @@ async function refreshToken(currentToken) {
         });
         
         if (!response.ok) return await login();
-        
         const data = await response.json();
         const token = data.token || (data.response && data.response.token);
-        
-        if (!token) return await login();
-        
-        return token;
+        return token || await login();
     } catch (e) {
-        console.error('Refresh failed:', e);
         return await login();
     }
 }
@@ -95,26 +112,18 @@ export async function getValidToken() {
     const savedExpiry = await redis.get(EXPIRY_KEY);
     const now = Date.now();
     
-    // Если токен есть в кэше
     if (savedToken && savedExpiry && now < Number(savedExpiry)) {
         return savedToken;
     }
     
-    // Получаем новый токен
     const newToken = await login();
     
-    // ФИНАЛЬНАЯ ПРОВЕРКА: Если токен все равно пустой (null/undefined),
-    // мы бросаем ошибку ЗДЕСЬ, чтобы не крашить Redis.
-    if (!newToken) {
-        throw new Error('CRITICAL: Login function returned null/undefined token');
-    }
+    if (!newToken) throw new Error('CRITICAL: Token is null');
     
     const newExpiry = now + (2 * 24 * 60 * 60 * 1000); 
-    
     await redis.set(TOKEN_KEY, newToken);
     await redis.set(EXPIRY_KEY, newExpiry);
     
     console.log('💾 Токен успешно сохранён');
-    
     return newToken;
 }
