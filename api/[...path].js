@@ -4,32 +4,40 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, HEAD');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Application, Lang');
-    
+
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
-    
+
     try {
-        // --- ИСПРАВЛЕНИЕ ПУТИ ---
-        // Мы берем полный URL запроса и вырезаем из него "/api"
-        // Это надежнее, чем req.query.path
         const requestUrl = new URL(req.url, `http://${req.headers.host}`);
-        
-        // Превращаем "/api/anime/1" -> "/anime/1"
-        // Превращаем "/api/search" -> "/search"
         let apiPath = requestUrl.pathname.replace(/^\/api/, '');
-        
-        // Если путь пустой (просто /api), делаем /
         if (!apiPath) apiPath = '/';
 
-        // Собираем полный URL для API Yani
         const fullUrl = `https://api.yani.tv${apiPath}${requestUrl.search}`;
         
         console.log(`📡 Запрос прокси: ${req.method} ${fullUrl}`);
         
-        // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        // ====== ОТЛАДКА ТОКЕНА ======
+        let token;
+        try {
+            token = await getValidToken();
+            console.log(`🔑 Токен получен: ${token ? token.substring(0, 20) + '...' : 'NULL!'}`);
+        } catch (tokenError) {
+            console.error('❌ Ошибка получения токена:', tokenError.message);
+            return res.status(500).json({
+                error: 'Token Error',
+                message: tokenError.message
+            });
+        }
         
-        const token = await getValidToken();
+        if (!token) {
+            return res.status(500).json({
+                error: 'No Token',
+                message: 'getValidToken() вернул null/undefined'
+            });
+        }
+        // ============================
         
         const fetchOptions = {
             method: req.method,
@@ -39,10 +47,17 @@ export default async function handler(req, res) {
                 'Accept': 'application/json',
                 'Lang': req.headers['lang'] || 'ru',
                 'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
             redirect: 'follow' 
         };
+        
+        // Логируем заголовки (без полного токена)
+        console.log('📤 Заголовки запроса:', {
+            ...fetchOptions.headers,
+            'Authorization': 'Bearer ***',
+            'X-Application': process.env.YUMMY_APP_TOKEN ? '***exists***' : 'MISSING!'
+        });
         
         if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
             fetchOptions.body = typeof req.body === 'object' ? JSON.stringify(req.body) : req.body;
@@ -50,17 +65,27 @@ export default async function handler(req, res) {
         
         const response = await fetch(fullUrl, fetchOptions);
         
+        console.log(`📥 Ответ API: ${response.status} ${response.statusText}`);
+        
         const contentType = response.headers.get('content-type');
         
         if (contentType && contentType.includes('application/json')) {
             const data = await response.json();
             return res.status(response.status).json(data);
         } else if (contentType && contentType.includes('text/html')) {
-            console.warn('⚠️ API вернул HTML. URL:', fullUrl);
+            // ====== ОТЛАДКА HTML ======
+            const htmlContent = await response.text();
+            console.warn('⚠️ API вернул HTML!');
+            console.warn('📄 Первые 500 символов:', htmlContent.substring(0, 500));
+            // ==========================
+            
             return res.status(404).json({
                 error: 'Endpoint Not Found',
-                message: 'Target API returned HTML instead of JSON. Path might be wrong.',
-                debugUrl: fullUrl
+                message: 'Target API returned HTML instead of JSON',
+                debugUrl: fullUrl,
+                httpStatus: response.status,
+                // Показываем начало HTML для отладки
+                htmlPreview: htmlContent.substring(0, 300)
             });
         } else {
             const text = await response.text();
