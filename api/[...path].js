@@ -18,85 +18,73 @@ export default async function handler(req, res) {
         
         console.log(`📡 Запрос прокси: ${req.method} ${fullUrl}`);
         
-        // ====== ОТЛАДКА ТОКЕНА ======
-        let token;
-        try {
-            token = await getValidToken();
-            console.log(`🔑 Токен получен: ${token ? token.substring(0, 20) + '...' : 'NULL!'}`);
-        } catch (tokenError) {
-            console.error('❌ Ошибка получения токена:', tokenError.message);
-            return res.status(500).json({
-                error: 'Token Error',
-                message: tokenError.message
-            });
-        }
+        const token = await getValidToken();
+        console.log(`🔑 Токен: ${token ? 'OK' : 'MISSING'}`);
         
-        if (!token) {
-            return res.status(500).json({
-                error: 'No Token',
-                message: 'getValidToken() вернул null/undefined'
-            });
-        }
-        // ============================
-        
+        // ====== ПОЛНАЯ ЭМУЛЯЦИЯ БРАУЗЕРА ======
         const fetchOptions = {
             method: req.method,
             headers: {
+                // Основные заголовки API
                 'Authorization': `Bearer ${token}`,
                 'X-Application': process.env.YUMMY_APP_TOKEN,
-                'Accept': 'application/json',
                 'Lang': req.headers['lang'] || 'ru',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                
+                // Полная эмуляция Chrome
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'cross-site',
+                'Origin': 'https://yani.tv',
+                'Referer': 'https://yani.tv/',
+                'DNT': '1',
+                'Connection': 'keep-alive'
             },
-            redirect: 'follow' 
+            redirect: 'follow'
         };
-        
-        // Логируем заголовки (без полного токена)
-        console.log('📤 Заголовки запроса:', {
-            ...fetchOptions.headers,
-            'Authorization': 'Bearer ***',
-            'X-Application': process.env.YUMMY_APP_TOKEN ? '***exists***' : 'MISSING!'
-        });
+        // =====================================
         
         if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
             fetchOptions.body = typeof req.body === 'object' ? JSON.stringify(req.body) : req.body;
+            fetchOptions.headers['Content-Type'] = 'application/json';
         }
         
         const response = await fetch(fullUrl, fetchOptions);
         
-        console.log(`📥 Ответ API: ${response.status} ${response.statusText}`);
+        console.log(`📥 Ответ: ${response.status}`);
         
         const contentType = response.headers.get('content-type');
         
         if (contentType && contentType.includes('application/json')) {
             const data = await response.json();
             return res.status(response.status).json(data);
-        } else if (contentType && contentType.includes('text/html')) {
-            // ====== ОТЛАДКА HTML ======
-            const htmlContent = await response.text();
-            console.warn('⚠️ API вернул HTML!');
-            console.warn('📄 Первые 500 символов:', htmlContent.substring(0, 500));
-            // ==========================
-            
-            return res.status(404).json({
-                error: 'Endpoint Not Found',
-                message: 'Target API returned HTML instead of JSON',
-                debugUrl: fullUrl,
-                httpStatus: response.status,
-                // Показываем начало HTML для отладки
-                htmlPreview: htmlContent.substring(0, 300)
-            });
         } else {
             const text = await response.text();
+            
+            // Если всё ещё HTML — показываем детали
+            if (contentType && contentType.includes('text/html')) {
+                console.warn('⚠️ Всё ещё HTML:', text.substring(0, 300));
+                return res.status(response.status).json({
+                    error: 'Blocked by Valtrix',
+                    status: response.status,
+                    message: 'Anti-bot protection is blocking datacenter IPs',
+                    preview: text.substring(0, 200)
+                });
+            }
+            
             return res.status(response.status).send(text);
         }
         
     } catch (error) {
-        console.error('❌ Proxy error:', error);
-        res.status(500).json({ 
-            error: 'Internal Proxy Error', 
-            message: error.message 
-        });
+        console.error('❌ Error:', error);
+        res.status(500).json({ error: error.message });
     }
 }
